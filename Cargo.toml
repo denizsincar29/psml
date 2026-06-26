@@ -1,0 +1,18 @@
+[package]
+name = "psml"
+version = "0.1.0"
+edition = "2021"
+description = "PSML (Prompt String Markup Language) -> PS1/PROMPT конвертер. Rust-порт psml.py."
+license = "MIT"
+
+[[bin]]
+name = "psml"
+path = "src/main.rs"
+
+[lib]
+name = "psml"
+path = "src/lib.rs"
+
+[dependencies]
+# quick-xml лексит теги/атрибуты/сущности — вместо собственного мини-парсера.
+quick-xml = "0.36"

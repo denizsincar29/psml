@@ -1,0 +1,22 @@
+<!doctype psml>
+<!-- комментарий, который должен быть полностью проигнорирован -->
+<psml shell="bash">
+  <head>
+    <title>edge&amp;cases &lt;test&gt; &quot;quoted&quot;</title>
+  </head>
+  <body>
+    <color fg="green"><bold><user/>@<host/></bold></color><color fg="blue"><cwd/></color> <color fg="brightred" bg="black"><cwdbase/></color>
+    Host:<hostfull/>
+    <bold/><italic/><underline/>
+    <color fg="#ff8800"><symbol/></color> <color bg="208"><jobs/></color> <color fg="gray"><exitcode/></color>
+    <reset/>
+    <br/>
+    Время:<time mode="24"/> <time mode="12"/> <time mode="ampm"/> <time mode="24short"/>
+    <br>
+    Дата:<date/> / <date fmt="%d.%m.%Y"/>
+    <br>
+    <git/><git prefix=" [" suffix="]"/>
+    <color fg="red"><cmd run="git status --porcelain 2&gt;/dev/null | grep -q . &amp;&amp; printf '*'"/></color>
+    <cmd run="[ -n &quot;$VIRTUAL_ENV&quot; ] &amp;&amp; printf '(%s) ' &quot;$(basename $VIRTUAL_ENV)&quot;"/>
+    <br/><symbol/> </body>
+</psml>
