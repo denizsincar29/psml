@@ -1,0 +1,125 @@
+name: Release
+
+# Запускается на каждый push в main. Большая часть запусков ничего не
+# делает (release-plz просто проверяет "накопилось ли что-то релизное" и
+# выходит) — реальный релиз + сборка бинарей происходят только когда
+# в main попадает merge release-PR'а, поднимающего версию в Cargo.toml.
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  # `release-plz release`: если в Cargo.toml версия новее последнего
+  # git-тега (то есть только что замержен release-PR) — создаёт git-тег
+  # vX.Y.Z и GitHub Release с changelog'ом. Если новой версии нет — просто
+  # ничего не делает (releases_created=false), и build-binaries ниже не
+  # запускается вовсе.
+  release-plz-release:
+    name: release-plz release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    outputs:
+      released: ${{ steps.release-plz.outputs.releases_created }}
+      tag: ${{ fromJSON(steps.release-plz.outputs.releases || '[{}]')[0].tag }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Run release-plz
+        id: release-plz
+        uses: release-plz/action@v0.5
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # `release-plz release-pr`: смотрит на коммиты (Conventional Commits)
+  # с последнего релиза и держит открытым/обновлённым один PR с новой
+  # версией Cargo.toml + CHANGELOG.md. Слияние этого PR — единственное
+  # ручное действие во всём процессе релиза.
+  release-plz-pr:
+    name: release-plz release-pr
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: release-plz-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Run release-plz
+        uses: release-plz/action@v0.5
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Собирает релизный бинарник под 4 платформы и заливает их в ТОЛЬКО ЧТО
+  # созданный release-plz-release Release. Намеренно job в ОДНОМ workflow
+  # run, а не отдельный workflow на push тега: GITHUB_TOKEN, которым
+  # release-plz создаёт тег/релиз, по дизайну GitHub Actions не может
+  # триггернуть ДРУГОЙ workflow run (это защита от рекурсии) — поэтому
+  # "push: tags:" в отдельном файле тут просто не сработал бы без PAT.
+  # needs: делает то же самое надёжно и без лишнего токена.
+  build-binaries:
+    name: build (${{ matrix.target }})
+    needs: release-plz-release
+    if: needs.release-plz-release.outputs.released == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+          - os: macos-13
+            target: x86_64-apple-darwin
+            archive: tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            archive: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.release-plz-release.outputs.tag }}
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: Package (tar.gz)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          cd "target/${{ matrix.target }}/release"
+          tar czf "$GITHUB_WORKSPACE/psml-${{ needs.release-plz-release.outputs.tag }}-${{ matrix.target }}.tar.gz" psml
+      - name: Package (zip)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "target/${{ matrix.target }}/release/psml.exe" -DestinationPath "psml-${{ needs.release-plz-release.outputs.tag }}-${{ matrix.target }}.zip"
+      - name: Upload to the release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.release-plz-release.outputs.tag }}
+          files: psml-${{ needs.release-plz-release.outputs.tag }}-${{ matrix.target }}.${{ matrix.archive }}
