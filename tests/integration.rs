@@ -291,3 +291,274 @@ fn errors_are_detected_like_in_python() {
         assert!(res.is_err(), "ожидалась ошибка для: {}", case);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Реестр шеллов
+// ---------------------------------------------------------------------------
+
+#[test]
+fn shell_keys_includes_all_backends() {
+    let keys = psml::shell_keys();
+    for expected in ["bash", "zsh", "fish", "powershell", "cmd", "nu"] {
+        assert!(keys.contains(&expected), "в реестре нет {:?}: {:?}", expected, keys);
+    }
+}
+
+#[test]
+fn unknown_shell_errors() {
+    let res = psml::convert("<psml><body><user/></body></psml>", Some("xyz"), false);
+    assert!(res.is_err());
+}
+
+#[test]
+fn powershell_alias_pwsh_resolves_to_same_backend() {
+    let by_key = psml::find_backend("powershell").unwrap();
+    let by_alias = psml::find_backend("pwsh").unwrap();
+    assert_eq!(by_key.key(), by_alias.key());
+}
+
+#[test]
+fn nu_alias_nushell_resolves_to_same_backend() {
+    let by_key = psml::find_backend("nu").unwrap();
+    let by_alias = psml::find_backend("nushell").unwrap();
+    assert_eq!(by_key.key(), by_alias.key());
+}
+
+#[test]
+fn cli_override_wins_over_doc_attribute() {
+    // <psml shell="bash">, но явно просим zsh — должен победить явный аргумент.
+    let out = psml::convert(
+        r#"<psml shell="bash"><body><user/></body></psml>"#,
+        Some("zsh"),
+        true,
+    )
+    .unwrap();
+    assert_eq!(out, "%n");
+}
+
+// ---------------------------------------------------------------------------
+// fish: структурные проверки + (если fish установлен) реальная проверка
+// синтаксиса через `fish -n` и реальное исполнение `fish_prompt`/`fish_title`.
+// ---------------------------------------------------------------------------
+
+fn fish_available() -> bool {
+    Command::new("fish")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+#[test]
+fn fish_raw_is_just_printf_no_function_wrapper() {
+    let out = psml::convert(
+        r#"<psml><body><color fg="green"><user/></color></body></psml>"#,
+        Some("fish"),
+        true,
+    )
+    .unwrap();
+    assert!(!out.contains("function"), "raw не должен включать обёртку: {}", out);
+    assert!(out.starts_with("printf '%s'"));
+    assert!(out.contains("$USER"));
+}
+
+#[test]
+fn fish_non_raw_defines_fish_prompt_and_fish_title() {
+    let out = psml::convert(
+        r#"<psml><head><title>hi</title></head><body><user/></body></psml>"#,
+        Some("fish"),
+        false,
+    )
+    .unwrap();
+    assert!(out.contains("function fish_prompt"));
+    assert!(out.contains("function fish_title"));
+    assert!(out.contains("echo 'hi'"));
+}
+
+#[test]
+fn fish_cmd_run_shells_out_to_bash() {
+    let out = psml::convert(
+        r#"<psml><body><cmd run="echo hi"/></body></psml>"#,
+        Some("fish"),
+        true,
+    )
+    .unwrap();
+    assert!(out.contains("(bash -c 'echo hi')"));
+}
+
+#[test]
+fn fish_syntax_is_valid_for_full_fixture() {
+    if !fish_available() {
+        eprintln!("fish не найден в PATH — skip проверки синтаксиса");
+        return;
+    }
+    let out = rust_convert_test_psml(Some("fish"), false);
+    let tmp = std::env::temp_dir().join("psml_fish_syntax_check.fish");
+    std::fs::write(&tmp, &out).unwrap();
+    let status = Command::new("fish")
+        .arg("-n")
+        .arg(&tmp)
+        .status()
+        .expect("не удалось запустить fish -n");
+    assert!(status.success(), "fish -n нашёл синтаксическую ошибку в:\n{}", out);
+}
+
+#[test]
+fn fish_actually_executes_and_produces_text() {
+    if !fish_available() {
+        eprintln!("fish не найден в PATH — skip реального исполнения");
+        return;
+    }
+    // Детерминированный документ — без <user/>/<host/>/<time/>, чтобы
+    // проверить именно ЦВЕТ/СТИЛЬ + статический текст байт-в-байт.
+    let psml = r#"<psml><body><color fg="green"><bold>hi</bold></color></body></psml>"#;
+    let out = psml::convert(psml, Some("fish"), false).unwrap();
+    let tmp = std::env::temp_dir().join("psml_fish_exec_check.fish");
+    std::fs::write(&tmp, &out).unwrap();
+    let result = Command::new("fish")
+        .arg("-c")
+        .arg(format!("source {}; fish_prompt", tmp.display()))
+        .output()
+        .expect("не удалось запустить fish -c");
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    assert_eq!(stdout, "\u{1b}[32m\u{1b}[1mhi\u{1b}[22m\u{1b}[39m");
+}
+
+// ---------------------------------------------------------------------------
+// PowerShell: только структурные проверки — в этой песочнице нет pwsh,
+// чтобы реально исполнить (нет доступа к репозиториям Microsoft); код
+// выверен вручную по документации, см. комментарии в render/powershell.rs.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn powershell_raw_is_just_the_string_literal() {
+    let out = psml::convert(
+        r#"<psml><body><color fg="green"><user/></color></body></psml>"#,
+        Some("powershell"),
+        true,
+    )
+    .unwrap();
+    assert!(!out.contains("function prompt"));
+    assert!(out.starts_with('"') && out.ends_with('"'));
+    assert!(out.contains("$env:USERNAME"));
+}
+
+#[test]
+fn powershell_non_raw_defines_prompt_function_and_sets_title() {
+    let out = psml::convert(
+        r#"<psml><head><title>hi</title></head><body><user/></body></psml>"#,
+        Some("powershell"),
+        false,
+    )
+    .unwrap();
+    assert!(out.starts_with("function prompt {"));
+    assert!(out.contains("$Host.UI.RawUI.WindowTitle = 'hi'"));
+}
+
+#[test]
+fn powershell_cmd_run_shells_out_to_bash() {
+    let out = psml::convert(
+        r#"<psml><body><cmd run="echo hi"/></body></psml>"#,
+        Some("powershell"),
+        true,
+    )
+    .unwrap();
+    assert!(out.contains("$(bash -c 'echo hi')"));
+}
+
+#[test]
+fn powershell_date_fmt_converts_strftime_to_dotnet() {
+    let out = psml::convert(
+        r#"<psml><body><date fmt="%d.%m.%Y"/></body></psml>"#,
+        Some("powershell"),
+        true,
+    )
+    .unwrap();
+    assert!(out.contains("dd\\.MM\\.yyyy"), "{}", out);
+}
+
+#[test]
+fn powershell_date_fmt_unknown_specifier_errors() {
+    let res = psml::convert(
+        r#"<psml><body><date fmt="%Q"/></body></psml>"#,
+        Some("powershell"),
+        true,
+    );
+    assert!(res.is_err());
+}
+
+// ---------------------------------------------------------------------------
+// cmd.exe: то, что поддержано — детерминированная проверка байт-в-байт;
+// то, что архитектурно невозможно (живое выполнение команд) — явная ошибка.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cmd_supported_features_render_exactly() {
+    let out = psml::convert(
+        r#"<psml><head><title>hi</title></head><body><color fg="green"><user/></color></body></psml>"#,
+        Some("cmd"),
+        false,
+    )
+    .unwrap();
+    assert_eq!(out, "title hi\r\nprompt $E[32m%USERNAME%$E[39m\r\n");
+}
+
+#[test]
+fn cmd_raw_has_no_title_or_prompt_wrapper() {
+    let out = psml::convert(
+        r#"<psml><head><title>hi</title></head><body><cwd/></body></psml>"#,
+        Some("cmd"),
+        true,
+    )
+    .unwrap();
+    assert_eq!(out, "$P");
+}
+
+#[test]
+fn cmd_cannot_run_live_commands() {
+    for psml in [
+        r#"<psml><body><git/></body></psml>"#,
+        r#"<psml><body><cmd run="echo hi"/></body></psml>"#,
+        r#"<psml><body><jobs/></body></psml>"#,
+        r#"<psml><body><cwdbase/></body></psml>"#,
+        r#"<psml><body><time mode="12"/></body></psml>"#,
+        r#"<psml><body><date fmt="%Y"/></body></psml>"#,
+    ] {
+        let res = psml::convert(psml, Some("cmd"), true);
+        assert!(res.is_err(), "ожидалась ошибка cmd.exe для: {}", psml);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// nu: бонусный шелл, структурные smoke-проверки (см. оговорку
+// "best-effort" в render/nu.rs).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn nu_non_raw_sets_prompt_command_closure() {
+    let out = psml::convert(
+        r#"<psml><body><user/></body></psml>"#,
+        Some("nu"),
+        false,
+    )
+    .unwrap();
+    assert!(out.contains("$env.PROMPT_COMMAND = {|| "));
+}
+
+#[test]
+fn nu_jobs_is_unsupported() {
+    let res = psml::convert(r#"<psml><body><jobs/></body></psml>"#, Some("nu"), true);
+    assert!(res.is_err());
+}
+
+#[test]
+fn nu_cmd_run_shells_out_to_bash() {
+    let out = psml::convert(
+        r#"<psml><body><cmd run="echo hi"/></body></psml>"#,
+        Some("nu"),
+        true,
+    )
+    .unwrap();
+    assert!(out.contains("(^bash -c r#'echo hi'#)"));
+}

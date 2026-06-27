@@ -4,7 +4,7 @@ use std::io::{self, Read};
 use std::path::Path;
 use std::process::exit;
 
-use psml::{build_output, psml_to_prompt, PsmlError};
+use psml::{convert, shell_keys, PsmlError};
 
 const DEFAULT_PATH: &str = "~/ps1.psml";
 
@@ -21,14 +21,22 @@ fn expand_home(path: &str) -> String {
 }
 
 fn print_help() {
-    println!("Конвертер PSML (Prompt String Markup Language) в PS1/PROMPT для bash/zsh.");
+    println!("Конвертер PSML (Prompt String Markup Language) в готовый промпт для разных шеллов.");
     println!();
     println!("Использование:");
-    println!("  psml [file] [--shell bash|zsh] [--raw]");
+    println!("  psml [file] [--shell <шелл>] [--raw]");
+    println!("  psml --list-shells");
     println!();
-    println!("  file       путь к .psml, '-' для stdin, или ничего (тогда {})", DEFAULT_PATH);
-    println!("  --shell    bash или zsh (если не указан — берётся из <psml shell=\"..\">)");
-    println!("  --raw      печатать только саму строку приглашения, без \"PS1=...\"");
+    println!(
+        "  file           путь к .psml, '-' для stdin, или ничего (тогда {})",
+        DEFAULT_PATH
+    );
+    println!(
+        "  --shell <шелл> один из: {} (если не указан — берётся из <psml shell=\"..\">, иначе bash)",
+        shell_keys().join(", ")
+    );
+    println!("  --raw          печатать только саму строку приглашения, без обвязки (PS1=.../function prompt {{...}}/...)");
+    println!("  --list-shells  показать поддерживаемые шеллы и выйти");
 }
 
 fn main() {
@@ -43,17 +51,18 @@ fn main() {
             "--shell" => {
                 i += 1;
                 if i >= args.len() {
-                    eprintln!("--shell требует значение (bash|zsh)");
+                    eprintln!("--shell требует значение ({})", shell_keys().join(", "));
                     exit(2);
                 }
-                let v = args[i].clone();
-                if v != "bash" && v != "zsh" {
-                    eprintln!("--shell должен быть 'bash' или 'zsh'");
-                    exit(2);
-                }
-                shell_arg = Some(v);
+                shell_arg = Some(args[i].clone());
             }
             "--raw" => raw = true,
+            "--list-shells" => {
+                for key in shell_keys() {
+                    println!("{}", key);
+                }
+                exit(0);
+            }
             "-h" | "--help" => {
                 print_help();
                 exit(0);
@@ -103,10 +112,8 @@ fn main() {
         }
     };
 
-    match psml_to_prompt(&text, shell_arg.as_deref()) {
-        Ok((title, body, shell, uses_subst)) => {
-            println!("{}", build_output(&title, &body, &shell, raw, uses_subst));
-        }
+    match convert(&text, shell_arg.as_deref(), raw) {
+        Ok(output) => println!("{}", output),
         Err(PsmlError(msg)) => {
             eprintln!("Ошибка PSML ({}): {}", src_desc, msg);
             exit(1);
