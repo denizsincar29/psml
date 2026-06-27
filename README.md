@@ -1,202 +1,169 @@
-# psml (Rust)
+# psml
 
-Rust-порт `psml.py` — конвертера PSML (Prompt String Markup Language) в
-готовый промпт для разных шеллов. Полное описание самого языка — в
-[`README_PSML.md`](./README_PSML.md) (взято из оригинального проекта,
-синтаксис PSML не менялся).
+**PSML** (Prompt String Markup Language) is a small HTML-like markup
+language for describing a shell prompt. Write semantic markup once, get a
+ready-to-use prompt for whichever shell you actually use.
 
-Разбор тегов/атрибутов/сущностей делает [`quick-xml`](https://docs.rs/quick-xml) —
-своего лексера тут нет, вся "своя" логика — это семантика самого PSML и
-генерация под конкретный шелл.
-
-## Поддерживаемые шеллы
-
-| Шелл | `--shell` | Живые `<git/>`/`<cmd run>` | Примечания |
-|---|---|---|---|
-| bash | `bash` (по умолчанию) | да (через backticks, см. ниже) | |
-| zsh | `zsh` | да (`$(...)` + `setopt PROMPT_SUBST`) | |
-| fish | `fish` | да, нативно (git) / через `bash -c` (`<cmd>`) | промпт — функция `fish_prompt`/`fish_title` |
-| PowerShell | `powershell` (алиас `pwsh`) | да, нативно (git) / через `bash -c` (`<cmd>`) | целимся в PowerShell 7+; промпт — функция `prompt {}` |
-| cmd.exe | `cmd` | **нет** — `PROMPT` в cmd.exe статическая строка, выполнять команды при отрисовке не может | нет `<jobs/>`, `<cwdbase/>`, 12-часового `<time/>`, кастомного `<date fmt>` — см. `render/cmd.rs` |
-| Nushell | `nu` (алиас `nushell`) | да, нативно (git) / через `^bash -c` (`<cmd>`) | бонусный шелл, best-effort (см. `render/nu.rs`), нет `<jobs/>` |
-
-`psml --list-shells` печатает этот список из самого бинарника.
-
-Каждый шелл — независимый бэкенд (см. "Архитектура" ниже); если в каком-то
-PSML-файле используется тег, который выбранный шелл принципиально не может
-поддержать (например `<git/>` под `cmd`), конвертер явно падает с понятным
-объяснением — никогда не молчит и не генерирует промпт, который "почти
-работает".
-
-## Сборка и использование
-
-```bash
-cargo build --release
-./target/release/psml prompt.psml                     # bash по умолчанию, печатает "PS1='...'"
-./target/release/psml prompt.psml --shell zsh          # печатает "PROMPT='...'"
-./target/release/psml prompt.psml --shell fish         # печатает "function fish_prompt ... end"
-./target/release/psml prompt.psml --shell powershell   # печатает "function prompt { ... }"
-./target/release/psml prompt.psml --shell cmd           # печатает "prompt $E[...]..."
-./target/release/psml prompt.psml --raw                # только сама строка/выражение, без обвязки
-./target/release/psml --list-shells                     # список поддержанных шеллов
-echo '<psml>...</psml>' | ./target/release/psml -
-./target/release/psml                                   # без аргумента — берёт ~/ps1.psml
+```html
+<psml>
+  <head><title>my terminal</title></head>
+  <body>
+    <color fg="green"><bold><user/>@<host/></bold></color>
+    <color fg="blue"><cwd/></color>
+    <git prefix=" (" suffix=")"/>
+    <symbol/>
+  </body>
+</psml>
 ```
 
-В `~/.bashrc` / `~/.zshrc`:
+```bash
+$ psml prompt.psml --shell bash
+PS1='\[\033]0;my terminal\007\]\[\033[32m\]\[\033[1m\]\u@\h\[\033[22m\]\[\033[39m\]\[\033[34m\]\w\[\033[39m\]`b=$(git symbolic-ref --short HEAD 2>/dev/null || git rev-parse --short HEAD 2>/dev/null); [ -n "$b" ] && printf "%s%s%s" " (" "$b" ")"`\$'
+```
+
+Same file, different shell (the real output has a literal ESC byte where
+this shows `\x1b` — written out as text here so it's actually readable):
 
 ```bash
+$ psml prompt.psml --shell fish
+function fish_prompt
+    printf '%s' '\x1b[32m\x1b[1m' $USER '@' $hostname '\x1b[22m\x1b[39m\x1b[34m' (prompt_pwd) '\x1b[39m' (set -l b (git symbolic-ref --short HEAD 2>/dev/null; or git rev-parse --short HEAD 2>/dev/null); test -n "$b"; and printf '%s%s%s' ' (' "$b" ')') (if fish_is_root_user; echo '#'; else; echo '$'; end)
+end
+
+function fish_title
+    echo 'my terminal'
+end
+```
+
+## Why
+
+Prompt configs tend to turn into an unreadable wall of escape codes that
+only make sense to whoever wrote them, and have to be rewritten from
+scratch for every shell. PSML lets you describe a prompt once, in a
+structure that's actually readable, and generates correct output for
+whatever shell — or shells — you need.
+
+## Supported shells
+
+| Shell | `--shell` | Live `<git/>` / `<cmd run>` | Notes |
+|---|---|---|---|
+| bash | `bash` (default) | yes (via backticks, see below) | |
+| zsh | `zsh` | yes (`$(...)` + `setopt PROMPT_SUBST`) | |
+| fish | `fish` | yes, native git / `bash -c` for `<cmd>` | prompt is a `fish_prompt`/`fish_title` function |
+| PowerShell | `powershell` (alias `pwsh`) | yes, native git / `bash -c` for `<cmd>` | targets PowerShell 7+; prompt is a `prompt {}` function |
+| cmd.exe | `cmd` | **no** — `PROMPT` is a static string, it can't run a command on every redraw | no `<jobs/>`, `<cwdbase/>`, 12-hour `<time/>`, or custom `<date fmt>` either, for the same reason |
+| Nushell | `nu` (alias `nushell`) | yes, native git / `^bash -c` for `<cmd>` | bonus shell, best-effort — see `src/render/nu.rs` |
+
+Run `psml --list-shells` to print this list straight from the binary.
+
+If a tag genuinely can't be supported on a given shell (e.g. `<git/>` on
+`cmd`), the converter fails with a clear explanation instead of silently
+emitting a prompt that's subtly broken.
+
+## Install
+
+```bash
+git clone https://github.com/denizsincar29/psml.git
+cd psml
+cargo build --release
+```
+
+This gives you `target/release/psml`.
+
+## Usage
+
+```bash
+psml prompt.psml                     # bash by default, prints PS1='...'
+psml prompt.psml --shell zsh         # prints PROMPT='...'
+psml prompt.psml --shell fish        # prints a fish_prompt function
+psml prompt.psml --shell powershell  # prints a prompt {} function
+psml prompt.psml --shell cmd         # prints a `prompt ...` command
+psml prompt.psml --raw               # just the prompt value, no wrapper
+psml --list-shells
+echo '<psml>...</psml>' | psml -     # read from stdin
+psml                                  # no argument -> reads ~/ps1.psml
+```
+
+Hook it into your shell config:
+
+```bash
+# ~/.bashrc / ~/.zshrc
 eval "$(~/psml/target/release/psml)"
 ```
 
-В `~/.config/fish/config.fish`:
-
 ```fish
+# ~/.config/fish/config.fish
 ~/psml/target/release/psml --shell fish ~/ps1.psml | source
 ```
 
-В профиле PowerShell (`$PROFILE`):
-
 ```powershell
+# $PROFILE
 & ~/psml/target/release/psml --shell powershell ~/ps1.psml | Out-String | Invoke-Expression
 ```
 
-В `autorun`-команде cmd.exe (например, через `HKCU\Software\Microsoft\Command Processor\AutoRun`)
-или просто в начале `.bat`-обёртки:
-
 ```bat
-for /f "delims=" %%i in ('psml.exe ps1.psml --shell cmd') do %%i
-```
-(построчно выполняет вывод — `title ...` и `prompt ...`).
-
-## Архитектура
-
-Три слоя, каждый знает только про соседний:
-
-```
-PSML-текст --[parser.rs]--> IR (ir.rs: Document/Node) --[render/*.rs]--> готовый скрипт
+:: cmd.exe — e.g. inside a .bat wrapper or an AutoRun key
+for /f "delims=" %i in ('psml.exe ps1.psml --shell cmd') do %i
 ```
 
-- **`src/ir.rs`** — дерево [`Node`]: `Text`, `User`, `Host`, `Color{fg,bg,children}`,
-  `Git{prefix,suffix}`, `Cmd(run)`, и т.д. Контейнерные теги (`Bold`/`Underline`/
-  `Italic`/`Color`) хранят уже вложенные дочерние узлы — никакого стека стилей
-  на этапе рендера не нужно, вложенность зафиксирована структурой дерева.
-- **`src/parser.rs`** — `parse_psml(&str) -> Result<Document, PsmlError>`. Цикл
-  по событиям `quick-xml` (`Start`/`Empty`/`End`/`Text`), который строит дерево
-  через стек "рамок" (`Frame`) для контейнерных тегов. Это единственное место,
-  которое знает про синтаксис PSML/XML — оно понятия не имеет, что такое bash
-  или fish.
-- **`src/render/`** — трейт `ShellBackend` (`render_document(&Document, raw) ->
-  Result<String, PsmlError>`) и по одному модулю на шелл: `bash.rs`, `zsh.rs`,
-  `fish.rs`, `powershell.rs`, `cmd.rs`, `nu.rs`. `render/util.rs` — общие куски:
-  кавычки разных шеллов (`posix_quote_single`, `fish_quote_single`,
-  `powershell_quote_single`, ...) и общий резолвер ANSI/SGR-цвета
-  (`resolve_sgr_color`) для всех бэкендов, которые в итоге пишут голые
-  SGR-коды (bash/fish/powershell/nu/cmd — отличаются только текстовым
-  обозначением самого ESC-байта). `render/mod.rs` — реестр (`BACKENDS`) и
-  резолвинг имени шелла (`--shell` важнее `<psml shell="...">`, по умолчанию
-  bash).
-- **`src/lib.rs`** — тонкая склейка: `convert(text, shell, raw)` = `parse_psml`
-  + `resolve_shell` + `backend.render_document`. Это весь публичный API,
-  которым пользуются `main.rs` (CLI) и тесты.
+## The language
 
-### Как добавить ещё один шелл
+Full tag reference, attributes, and more examples (git status, venv
+indicator, exit-code coloring, etc.) live in
+[PSML.md](./PSML.md).
 
-1. Написать `src/render/<имя>.rs` с `impl ShellBackend for <Тип>` (по образцу
-   `fish.rs` — самый "обычный" из новых; `cmd.rs` — пример, как явно
-   отказываться от того, что шелл не может).
-2. Добавить `&<имя>::<Тип>` в `render::BACKENDS` (`src/render/mod.rs`).
+A quick taste of the available tags:
 
-Ни парсер, ни IR, ни другие бэкенды трогать не нужно — `ir.rs`/`parser.rs`
-уже умеют всё, что нужно любому шеллу.
+| Tag | Meaning |
+|---|---|
+| `<user/>` `<host/>` `<hostfull/>` | username / hostname / FQDN |
+| `<cwd/>` `<cwdbase/>` | current directory, full or just the last component |
+| `<symbol/>` `<jobs/>` `<exitcode/>` | `$`/`#` prompt char, background job count, last exit code |
+| `<time mode="24\|12\|ampm\|24short"/>` `<date fmt="...">` | time / date |
+| `<git prefix=".." suffix="..">` | current git branch |
+| `<cmd run="...">` | output of an arbitrary shell command |
+| `<bold>` `<underline>` `<italic>` `<color fg=".." bg="..">` | style, nestable |
 
-### Почему `<cmd run="...">`/`<git/>` на fish/PowerShell/Nushell иногда зовут `bash -c`
+## How it works
 
-`<cmd run="...">` — это произвольная POSIX shell-команда из самого PSML-файла
-(см. примеры в `README_PSML.md` с `[ -n "$VAR" ] && ...`). Транслировать
-произвольный bash-синтаксис в fish/PowerShell/nu-синтаксис на лету не имеет
-смысла и было бы ненадёжно — поэтому для этих трёх шеллов такая команда
-выполняется через `bash -c` (на Windows это работает, если рядом с git
-установлен Git for Windows/Git Bash — он почти всегда есть, если есть сам
-git; на Linux/macOS bash есть почти всегда). `<git/>` — наоборот, это
-встроенная в PSML фича с чётко определённым смыслом, поэтому она
-реализована НАТИВНО на каждом шелле (без зависимости от bash) — см.
-`git_expr()` в соответствующем `render/*.rs`.
+```
+PSML text --[src/parser.rs]--> IR tree (src/ir.rs) --[src/render/*.rs]--> shell script
+```
 
-## Тесты
+- **`src/ir.rs`** — a shell-agnostic tree (`Node`: `Text`, `User`, `Host`,
+  `Color { fg, bg, children }`, `Git`, `Cmd`, ...). Container tags already
+  hold their nested children, so there's no style stack to manage at
+  render time.
+- **`src/parser.rs`** — turns PSML text into that tree. This is the only
+  place that knows anything about PSML/XML syntax; it has no idea what a
+  shell even is.
+- **`src/render/`** — one module per shell, each implementing the
+  `ShellBackend` trait. `render/util.rs` holds the bits shared by several
+  backends (quoting rules, the ANSI/SGR color resolver used by bash, fish,
+  PowerShell, nu, and cmd).
+
+Adding a new shell means writing a new `src/render/<name>.rs` and
+registering it in `render::BACKENDS` — no changes to the parser, the IR, or
+any other backend required.
+
+## Testing
 
 ```bash
 cargo test
 ```
 
-- сверка rust-вывода для bash с замороженным `test.ps1o`;
-- живая сверка rust vs `python3 python_ref/psml.py` для bash/zsh × `--raw`
-  (если `python3` не найден в `PATH` — тест аккуратно skip'ается, а не падает);
-- точечные тесты на эджкейсы PSML (whitespace-правило, сущности,
-  самозакрывающиеся стили, вложенность, `PROMPT_SUBST`, реестр шеллов,
-  алиасы `pwsh`/`nushell`);
-- **fish**: если `fish` найден в `PATH` — реальная проверка синтаксиса
-  (`fish -n`) на полном `test.psml` И реальное исполнение `fish_prompt`
-  с проверкой точного байтового вывода;
-- **cmd.exe**: детерминированные byte-exact проверки того, что поддержано,
-  плюс проверка, что `<git/>`/`<cmd run>`/`<jobs/>`/`<cwdbase/>`/12-часовой
-  `<time/>`/кастомный `<date fmt>` явно (а не молча) считаются ошибкой;
-  исполнить реальный `cmd.exe` негде (Linux-песочница), но синтаксис
-  `$`-кодов простой и хорошо документирован (`prompt /?`);
-- **PowerShell/nu**: структурные smoke-тесты (нет доступа ни к репозиториям
-  Microsoft, ни к боту, способному собрать `nu` за разумное время в этой
-  песочнице) — код выверен вручную по документации, см. комментарии в
-  `render/powershell.rs`/`render/nu.rs`. Если что-то не взлетит на вашей
-  версии PowerShell/Nushell — это ожидаемо для самых "молодых" бэкендов,
-  присылайте issue/PR.
+- bash/zsh output is checked byte-for-byte against a frozen snapshot and,
+  if `python3` is available, against the original `python_ref/psml.py`
+  reference implementation.
+- fish output is checked with a real `fish -n` syntax check and by
+  actually running `fish_prompt`, if `fish` is installed.
+- cmd.exe has deterministic exact-output tests for what it supports, and
+  tests asserting that the unsupported tags fail with a clear error.
+- PowerShell/nu have structural smoke tests (no sandboxed access to a real
+  `pwsh`/`nu` to execute against — the code has been reviewed by hand
+  instead, see the comments in `src/render/powershell.rs` /
+  `src/render/nu.rs`).
 
-## Фикс под git-bash/MSYS2: backticks вместо $(...) для `<git/>`/`<cmd/>` в bash
+## License
 
-В bash-сборке MSYS2 (на которой держится git-bash / Git for Windows) есть
-давний баг: если в `PS1`, заданном через `$(...)`-подстановку, где-то дальше
-в той же строке встречается `\n`, парсер ломается с
-`syntax error near unexpected token `)'`. Тикет открыт с 2014-го и до сих пор
-не пофикшен в самом MSYS2: <https://github.com/msys2/MSYS2-packages/issues/1839>.
-Воспроизводится в любом PSML-файле, где `<git/>` или `<cmd/>` стоят раньше
-`<br/>` в bash-режиме (то есть почти всегда).
-
-Поэтому для **bash** `<git/>`/`<cmd/>` оборачиваются в backticks, а не в
-`$(...)` — ровно так же, как в дефолтном `PS1` самого git-bash вызывается
-`` `__git_ps1` `` (а не `$(__git_ps1)`) специально по этой причине. Для
-**zsh** этот баг не актуален (он специфичен для патча MSYS2 именно к bash),
-там всё осталось на `$(...)` + `setopt PROMPT_SUBST`, как и в python.
-fish/PowerShell/cmd/nu этот баг тоже не касается — он специфичен именно для
-bash-сборки MSYS2.
-
-Из-за этого rust-вывод для bash **намеренно** отличается от
-`python_ref/psml.py` именно в этом месте — `python_ref/psml.py` оставлен
-нетронутым (это твой реальный скрипт, трогать его без обратной связи не дело),
-а тесты сверяют bash-вывод после обратной нормализации backticks → `$(...)`
-(см. `backticks_to_dollar_paren()` в `tests/integration.rs`). zsh-вывод
-сверяется как и раньше, байт-в-байт.
-
-## Заметки о `quick-xml` vs `html.parser`
-
-- `html.parser` в Python принимает практически любой "грязный" HTML, в том
-  числе несовпадающие закрывающие теги (`<b>...</bold>`) и незакрытые
-  void-теги (`<br>` без `/>` и без `</br>`). По умолчанию `quick-xml` такое
-  бы зарубил как XML-ошибку — поэтому в `parser.rs` явно выставлено
-  `reader.config_mut().check_end_names = false`: это снимает проверку имён
-  закрывающих тегов на уровне лексера. Собственная проверка вложенности
-  (нужна ли она вообще и совпадает ли *смысловой* алиас — `b`/`bold`,
-  `i`/`italic` и т.п.) всё равно делается через стек "рамок" в `parser.rs`,
-  как и в оригинале. Проверено тестом `errors_are_detected_like_in_python` +
-  ручной сверкой с живым питоном.
-- **Единственное оставшееся отличие**: `quick-xml` требует валидного
-  XML-экранирования голого `&` даже в обычном тексте (не только в атрибутах) —
-  `<body>Tom & Jerry</body>` он считает ошибкой, а python тихо пропускает
-  как литеральный `&`. Сам PSML и так требует экранировать `&`/`<`/`"` в
-  атрибутах (`<cmd run="...">`), так что на практике это не проблема, но
-  если где-то в тексте промпта затесался "голый" `&` — экранируй его как
-  `&amp;`.
-- **Новое в этой версии**: `<title>` теперь поддерживает только текст (без
-  вложенных тегов) — в оригинале тег внутри `<title>` тихо обрабатывался как
-  стиль/escape-код, но результат утекал не в заголовок окна, а в тело
-  промпта (баг в `in_title`-роутинге). Так это никогда осознанно не
-  использовалось, так что это сознательное уточнение языка, а не потеря
-  функциональности.
+MIT — see [LICENSE](./LICENSE).
