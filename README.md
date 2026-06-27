@@ -187,9 +187,8 @@ ANSI text straight to the terminal.
 cargo test
 ```
 
-- bash/zsh output is checked byte-for-byte against a frozen snapshot and,
-  if `python3` is available, against the original `python_ref/psml.py`
-  reference implementation.
+- bash/zsh output is checked byte-for-byte against frozen snapshots for
+  every `--shell`/`--raw` combination (`test*.ps1o`).
 - fish output is checked with a real `fish -n` syntax check and by
   actually running `fish_prompt`, if `fish` is installed.
 - cmd.exe has deterministic exact-output tests for what it supports, and

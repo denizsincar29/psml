@@ -1,0 +1,4 @@
+\[\033]0;edge&cases <test> "quoted"\007\]\[\033[32m\]\[\033[1m\]\u@\h\[\033[22m\]\[\033[39m\]\[\033[34m\]\w\[\033[39m\] \[\033[91;40m\]\W\[\033[39;49m\]
+    Host:\H\[\033[1m\]\[\033[22m\]\[\033[3m\]\[\033[23m\]\[\033[4m\]\[\033[24m\]\[\033[38;2;255;136;0m\]\$\[\033[39m\] \[\033[48;5;208m\]\j\[\033[49m\] \[\033[90m\]$?\[\033[39m\]\[\033[0m\]\n
+    Время:\t \T \@ \A\n
+    Дата:\d / \D{%d.%m.%Y}\n`b=$(git symbolic-ref --short HEAD 2>/dev/null || git rev-parse --short HEAD 2>/dev/null); [ -n "$b" ] && printf "%s%s%s" " (" "$b" ")"``b=$(git symbolic-ref --short HEAD 2>/dev/null || git rev-parse --short HEAD 2>/dev/null); [ -n "$b" ] && printf "%s%s%s" " [" "$b" "]"`\[\033[31m\]`git status --porcelain 2>/dev/null | grep -q . && printf '*'`\[\033[39m\]`[ -n "$VIRTUAL_ENV" ] && printf '(%s) ' "$(basename $VIRTUAL_ENV)"`\n\$ 

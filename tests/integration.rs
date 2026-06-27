@@ -1,9 +1,11 @@
-//! Интеграционные тесты: сравнение Rust-порта с оригинальным `psml.py`.
+//! Интеграционные тесты.
 //!
-//! Часть тестов сверяется с "замороженным" эталоном `test.ps1o` (не требует
-//! python3 в системе вообще), часть — реально запускает `python_ref/psml.py`
-//! через python3 и сравнивает вывод вживую (требует python3 в PATH; если его
-//! нет, тест аккуратно skip'ается с сообщением, а не падает).
+//! `test.psml` — фикстура со всеми эджкейсами языка. Эталонные снапшоты
+//! (`test*.ps1o`) — замороженный вывод самого rust-бинарника для разных
+//! комбинаций `--shell`/`--raw`, проверены при заморозке (вручную и сверкой
+//! с оригинальным python-эталоном, который как раз поэтому больше не нужен
+//! держать в репозитории как живую зависимость теста) — дальше тест просто
+//! следит, что вывод не разойдётся с зафиксированным при будущих правках.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -17,137 +19,44 @@ fn read_fixture(name: &str) -> String {
         .unwrap_or_else(|e| panic!("не удалось прочитать {}: {}", name, e))
 }
 
-fn python3_available() -> bool {
-    Command::new("python3")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-/// Запускает оригинальный python_ref/psml.py с заданными доп. аргументами,
-/// подавая test.psml на stdin. Возвращает stdout (или None, если python3 не
-/// найден / скрипт не нашёлся — тест в этом случае skip'ается).
-fn run_python_on_test_psml(extra_args: &[&str]) -> Option<String> {
-    if !python3_available() {
-        eprintln!("python3 не найден в PATH — skip динамической сверки с эталоном");
-        return None;
-    }
-    let script = manifest_dir().join("python_ref/psml.py");
-    let test_psml = manifest_dir().join("test.psml");
-    let mut cmd = Command::new("python3");
-    cmd.arg(&script).arg(&test_psml);
-    cmd.args(extra_args);
-    let output = cmd.output().expect("не удалось запустить python3");
-    if !output.status.success() {
-        panic!(
-            "python_ref/psml.py завершился с ошибкой: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    Some(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
 fn rust_convert_test_psml(shell: Option<&str>, raw: bool) -> String {
     let text = read_fixture("test.psml");
     psml::convert(&text, shell, raw).expect("rust-конвертер не должен падать на test.psml")
 }
 
-/// Обратное преобразование к `wrap_subst()` из lib.rs для bash: конвертирует
-/// `` `...` `` обратно в `$(...)`, чтобы можно было сравнить с "сырым"
-/// выводом python (тот всегда использует `$(...)`, потому что в нём нет
-/// обхода бага MSYS2-bash — см. komментарий у `wrap_subst`).
-/// Нужно только тесту, в самой библиотеке этого нет и не должно быть.
-fn backticks_to_dollar_paren(s: &str) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    let n = chars.len();
-    let mut out = String::with_capacity(s.len());
-    let mut i = 0;
-    while i < n {
-        if chars[i] == '`' {
-            let mut j = i + 1;
-            let mut inner = String::new();
-            while j < n && chars[j] != '`' {
-                if chars[j] == '\\' && j + 1 < n && matches!(chars[j + 1], '`' | '\\') {
-                    inner.push(chars[j + 1]);
-                    j += 2;
-                } else {
-                    inner.push(chars[j]);
-                    j += 1;
-                }
-            }
-            out.push_str("$(");
-            out.push_str(&inner);
-            out.push(')');
-            i = j + 1; // пропускаем закрывающий backtick
-            continue;
-        }
-        out.push(chars[i]);
-        i += 1;
-    }
-    out
+fn assert_matches_fixture(fixture: &str, shell: Option<&str>, raw: bool) {
+    let expected = read_fixture(fixture);
+    let expected = expected.trim_end_matches('\n');
+    let actual = rust_convert_test_psml(shell, raw);
+    assert_eq!(actual, expected, "вывод rust расходится с замороженным {}", fixture);
 }
 
 // ---------------------------------------------------------------------------
-// Сверка со статическим эталоном test.ps1o (без python3 во время теста)
+// Сверка со статическими эталонами test*.ps1o
 // ---------------------------------------------------------------------------
 
 #[test]
 fn matches_frozen_snapshot_default_bash() {
-    // ВНИМАНИЕ: test.ps1o с момента фикса MSYS2-бага (см. wrap_subst() в
-    // lib.rs) — это не сырой вывод python_ref/psml.py, а снапшот
-    // УЖЕ-ПОФИКШЕННОГО rust-поведения (backticks вместо $(...) для
-    // <git/>/<cmd/> в bash). Регенерируется через сам rust-бинарник.
-    // Параллельная сверка с живым python — ниже, с нормализацией.
-    let expected = read_fixture("test.ps1o");
-    let expected = expected.trim_end_matches('\n');
-    let actual = rust_convert_test_psml(None, false);
-    assert_eq!(actual, expected, "вывод rust расходится с замороженным test.ps1o");
+    assert_matches_fixture("test.ps1o", None, false);
+}
+
+#[test]
+fn matches_frozen_snapshot_raw_bash() {
+    assert_matches_fixture("test_bash_raw.ps1o", None, true);
+}
+
+#[test]
+fn matches_frozen_snapshot_zsh() {
+    assert_matches_fixture("test_zsh.ps1o", Some("zsh"), false);
+}
+
+#[test]
+fn matches_frozen_snapshot_raw_zsh() {
+    assert_matches_fixture("test_zsh_raw.ps1o", Some("zsh"), true);
 }
 
 // ---------------------------------------------------------------------------
-// Динамическая сверка "живого" python с rust по всем комбинациям флагов
-// ---------------------------------------------------------------------------
-
-#[test]
-fn matches_live_python_default_bash() {
-    // bash сознательно отличается от python: <git/>/<cmd/> заворачиваются в
-    // backticks, а не в $(...) — обход бага MSYS2-bash (см. wrap_subst() в
-    // lib.rs и https://github.com/msys2/MSYS2-packages/issues/1839).
-    // Поэтому сравниваем после обратной нормализации backticks -> $(...).
-    let Some(py_out) = run_python_on_test_psml(&[]) else { return };
-    let py_out = py_out.trim_end_matches('\n');
-    let rs_out = rust_convert_test_psml(None, false);
-    assert_eq!(backticks_to_dollar_paren(&rs_out), py_out);
-}
-
-#[test]
-fn matches_live_python_zsh() {
-    let Some(py_out) = run_python_on_test_psml(&["--shell", "zsh"]) else { return };
-    let py_out = py_out.trim_end_matches('\n');
-    let rs_out = rust_convert_test_psml(Some("zsh"), false);
-    assert_eq!(rs_out, py_out);
-}
-
-#[test]
-fn matches_live_python_raw_bash() {
-    // см. комментарий в matches_live_python_default_bash про backticks vs $(...)
-    let Some(py_out) = run_python_on_test_psml(&["--raw"]) else { return };
-    let py_out = py_out.trim_end_matches('\n');
-    let rs_out = rust_convert_test_psml(None, true);
-    assert_eq!(backticks_to_dollar_paren(&rs_out), py_out);
-}
-
-#[test]
-fn matches_live_python_raw_zsh() {
-    let Some(py_out) = run_python_on_test_psml(&["--shell", "zsh", "--raw"]) else { return };
-    let py_out = py_out.trim_end_matches('\n');
-    let rs_out = rust_convert_test_psml(Some("zsh"), true);
-    assert_eq!(rs_out, py_out);
-}
-
-// ---------------------------------------------------------------------------
-// Точечные эджкейсы, не требующие python3 (зафиксированные ожидания)
+// Точечные эджкейсы (зафиксированные ожидания)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -269,11 +178,11 @@ fn bash_does_not_need_prompt_subst() {
 }
 
 // ---------------------------------------------------------------------------
-// Эджкейсы-ошибки: достаточно того, что rust тоже считает их ошибкой
+// Эджкейсы-ошибки на уровне PSML/IR (не зависят от шелла)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn errors_are_detected_like_in_python() {
+fn malformed_documents_are_rejected() {
     let bad_cases = [
         "<body><user/></body>",                                   // нет <psml>
         "<psml><body><foo/></body></psml>",                       // неизвестный тег

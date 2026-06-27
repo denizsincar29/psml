@@ -1,0 +1,9 @@
+setopt PROMPT_SUBST  # нужно, чтобы $(...) внутри PROMPT вычислялся
+PROMPT='%{\e]0;edge&cases <test> "quoted"\a%}%F{green}%B%n@%m%b%f%F{blue}%~%f %F{9}%K{black}%1~%f%k
+    Host:%M%B%b%{\e[3m%}%{\e[23m%}%U%u%F{#ff8800}%#%f %K{208}%j%k %F{8}%?%f%f%k%b%u%{\e[0m%}
+
+    Время:%D{%H:%M:%S} %D{%I:%M:%S} %D{%I:%M %p} %D{%H:%M}
+
+    Дата:%D{%a %b %d} / %D{%d.%m.%Y}
+$(b=$(git symbolic-ref --short HEAD 2>/dev/null || git rev-parse --short HEAD 2>/dev/null); [ -n "$b" ] && printf "%s%s%s" " (" "$b" ")")$(b=$(git symbolic-ref --short HEAD 2>/dev/null || git rev-parse --short HEAD 2>/dev/null); [ -n "$b" ] && printf "%s%s%s" " [" "$b" "]")%F{red}$(git status --porcelain 2>/dev/null | grep -q . && printf '\''*'\'')%f$([ -n "$VIRTUAL_ENV" ] && printf '\''(%s) '\'' "$(basename $VIRTUAL_ENV)")
+%# '

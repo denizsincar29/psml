@@ -1,7 +1,7 @@
 //! bash-бэкенд. Выход побайтово совпадает с тем, что было до рефакторинга
-//! на IR (см. `tests/integration.rs::matches_frozen_snapshot_default_bash`
-//! и сверки с `python_ref/psml.py`) — меняется только то, ОТКУДА берутся
-//! данные (дерево [`Node`], а не поток событий парсера).
+//! на IR — закреплено замороженными снапшотами в `tests/integration.rs`
+//! (`matches_frozen_snapshot_default_bash`/`_raw_bash`), меняется только
+//! то, ОТКУДА берутся данные (дерево [`Node`], а не поток событий парсера).
 
 use crate::ir::{Document, Node, PsmlError, TimeMode};
 use crate::render::util::{posix_quote_single, resolve_sgr_color};
