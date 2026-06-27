@@ -161,17 +161,11 @@ fn emit_color(
 }
 
 fn time_expr(mode: TimeMode) -> String {
-    let fmt = match mode {
-        TimeMode::H24 => "%H:%M:%S",
-        TimeMode::H12 => "%I:%M:%S",
-        TimeMode::AmPm => "%I:%M %p",
-        TimeMode::H24Short => "%H:%M",
-    };
-    format!("(date {})", fish_quote_single(&format!("+{}", fmt)))
+    format!("(date {})", fish_quote_single(&format!("+{}", mode.strftime_fmt())))
 }
 
 fn date_expr(fmt: Option<&str>) -> String {
-    let f = fmt.unwrap_or("%a %b %d");
+    let f = fmt.unwrap_or(crate::ir::DEFAULT_DATE_FMT);
     format!("(date {})", fish_quote_single(&format!("+{}", f)))
 }
 

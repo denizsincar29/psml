@@ -48,7 +48,22 @@ impl TimeMode {
             _ => return Err(err!("<time mode=...>: неизвестный режим {:?}", s)),
         })
     }
+
+    /// strftime-формат для этого режима — используют бэкенды, которые в
+    /// итоге зовут системную команду `date` (fish, nu) или `--preview`.
+    pub fn strftime_fmt(self) -> &'static str {
+        match self {
+            TimeMode::H24 => "%H:%M:%S",
+            TimeMode::H12 => "%I:%M:%S",
+            TimeMode::AmPm => "%I:%M %p",
+            TimeMode::H24Short => "%H:%M",
+        }
+    }
 }
+
+/// strftime-формат даты по умолчанию (когда `<date>` без `fmt`) — общий для
+/// тех же трёх мест, что и `TimeMode::strftime_fmt`.
+pub const DEFAULT_DATE_FMT: &str = "%a %b %d";
 
 /// Один узел дерева промпта. Контейнерные варианты (Bold/Underline/Italic/
 /// Color) хранят уже вложенное содержимое — никакого стека стилей в

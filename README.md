@@ -79,6 +79,7 @@ psml prompt.psml --shell fish        # prints a fish_prompt function
 psml prompt.psml --shell powershell  # prints a prompt {} function
 psml prompt.psml --shell cmd         # prints a `prompt ...` command
 psml prompt.psml --raw               # just the prompt value, no wrapper
+psml prompt.psml --preview           # actually run it and print a real preview right now
 psml --list-shells
 echo '<psml>...</psml>' | psml -     # read from stdin
 psml                                  # no argument -> reads ~/ps1.psml
@@ -98,13 +99,41 @@ eval "$(~/psml/target/release/psml)"
 
 ```powershell
 # $PROFILE
-& ~/psml/target/release/psml --shell powershell ~/ps1.psml | Out-String | Invoke-Expression
+& "$HOME\psml\target\release\psml.exe" --shell powershell "$HOME\ps1.psml" | Out-String | Invoke-Expression
 ```
 
 ```bat
 :: cmd.exe — e.g. inside a .bat wrapper or an AutoRun key
 for /f "delims=" %i in ('psml.exe ps1.psml --shell cmd') do %i
 ```
+
+## Preview
+
+Editing PSML by hand and reloading your shell every time to see if it looks
+right gets old fast. `--preview` skips that loop entirely: it evaluates the
+markup directly (not through any shell backend at all) and prints the
+actual resulting prompt right into your terminal.
+
+```bash
+$ psml prompt.psml --preview
+root@vm/home/you/code (main)$
+```
+
+It does this with **real, live values** wherever that's cheap and
+meaningful: your actual username/hostname/cwd, the real current time/date,
+and yes — `<git/>` and `<cmd run="...">` are genuinely executed (the same
+way they're written to run inside a real prompt; running your own
+`<cmd run>` here is no riskier than sourcing the same file into `.bashrc`).
+The only exceptions are `<jobs/>` and `<exitcode/>`: those describe a
+property of an *interactive shell session* (its job table, its last exit
+status), not of the `psml` process itself, so there's nothing real to read
+— they're shown as `0` with a one-line note appended if the document
+actually uses them, rather than silently pretending it's a live value.
+
+`--preview` ignores `--shell` and `--raw` — it isn't tied to any particular
+shell's capabilities (or limitations: a `<git/>` that would fail to compile
+for `cmd.exe` previews just fine, since preview never goes through the
+`cmd` backend at all).
 
 ## The language
 
@@ -146,6 +175,12 @@ Adding a new shell means writing a new `src/render/<name>.rs` and
 registering it in `render::BACKENDS` — no changes to the parser, the IR, or
 any other backend required.
 
+`src/preview.rs` (the `--preview` flag) sits next to `render/`, not inside
+it — it isn't a `ShellBackend`. Instead of generating code for a shell to
+run later, it walks the same IR tree and evaluates it right now (real
+`$USER`/cwd/git/`<cmd run>`, see the **Preview** section above), printing
+ANSI text straight to the terminal.
+
 ## Testing
 
 ```bash
@@ -163,6 +198,8 @@ cargo test
   `pwsh`/`nu` to execute against — the code has been reviewed by hand
   instead, see the comments in `src/render/powershell.rs` /
   `src/render/nu.rs`).
+- `--preview` has its own tests, including one that actually shells out and
+  checks the real output of a `<cmd run="...">`.
 
 ## License
 

@@ -13,16 +13,22 @@
 //! 3. [`convert`] — тонкая склейка двух предыдущих пунктов; это то, что
 //!    используют CLI (`main.rs`) и тесты.
 //!
+//! Отдельно — [`preview::render_preview`] (`--preview` в CLI): не бэкенд
+//! шелла, а прямой "интерпретатор" дерева [`ir::Node`] в готовый ANSI-текст
+//! для немедленного просмотра в терминале, без правки конфига шелла.
+//!
 //! Добавить новый шелл = написать новый модуль в `src/render/`,
 //! реализовать там `ShellBackend` и добавить ссылку на него в
 //! `render::BACKENDS`. Парсер и остальные бэкенды трогать не нужно.
 
 pub mod ir;
 pub mod parser;
+pub mod preview;
 pub mod render;
 
 pub use ir::{Document, Node, PsmlError, TimeMode};
 pub use parser::parse_psml;
+pub use preview::render_preview;
 pub use render::{find_backend, resolve_shell, shell_keys, ShellBackend, BACKENDS};
 
 /// Главная функция крейта: разбирает `psml_text` и рендерит результат для

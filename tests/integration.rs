@@ -562,3 +562,62 @@ fn nu_cmd_run_shells_out_to_bash() {
     .unwrap();
     assert!(out.contains("(^bash -c r#'echo hi'#)"));
 }
+
+// ---------------------------------------------------------------------------
+// --preview / render_preview: интерпретатор IR, а не shell-бэкенд — реально
+// выполняет <git/>/<cmd run>/`date`, печатает готовый ANSI-текст.
+// ---------------------------------------------------------------------------
+
+fn render_preview(psml: &str) -> Result<String, psml::PsmlError> {
+    let doc = psml::parse_psml(psml).expect("doc должен парситься");
+    psml::render_preview(&doc)
+}
+
+#[test]
+fn preview_renders_static_content_exactly() {
+    let out = render_preview(
+        r#"<psml><body><color fg="green"><bold>hi</bold></color></body></psml>"#,
+    )
+    .unwrap();
+    assert_eq!(out, "\u{1b}[32m\u{1b}[1mhi\u{1b}[22m\u{1b}[39m");
+}
+
+#[test]
+fn preview_shows_window_title_line() {
+    let out = render_preview(r#"<psml><head><title>hi</title></head><body>x</body></psml>"#)
+        .unwrap();
+    assert!(out.starts_with("Заголовок окна: hi\n"));
+}
+
+#[test]
+fn preview_actually_runs_cmd_run() {
+    let out = render_preview(r#"<psml><body><cmd run="echo hi-from-shell"/></body></psml>"#)
+        .unwrap();
+    assert_eq!(out, "hi-from-shell");
+}
+
+#[test]
+fn preview_notes_jobs_and_exitcode_are_placeholders() {
+    let out = render_preview(r#"<psml><body><jobs/></body></psml>"#).unwrap();
+    assert!(out.contains("jobs/"), "{}", out);
+    assert!(out.contains("пример"), "{}", out);
+
+    // а если этих тегов в документе нет — пометки быть не должно
+    let out2 = render_preview(r#"<psml><body><user/></body></psml>"#).unwrap();
+    assert!(!out2.contains("пример"));
+}
+
+#[test]
+fn preview_errors_on_invalid_color_same_as_any_backend() {
+    let res = render_preview(r#"<psml><body><color fg="999">x</color></body></psml>"#);
+    assert!(res.is_err());
+}
+
+#[test]
+fn preview_ignores_shell_capability_limits() {
+    // <git/> и <cwdbase/> под --shell cmd должны падать у реального
+    // cmd-бэкенда — но превью не бэкенд, оно не привязано к --shell вообще
+    // и просто исполняет/вычисляет всё напрямую.
+    let out = render_preview(r#"<psml shell="cmd"><body><cwdbase/></body></psml>"#);
+    assert!(out.is_ok(), "{:?}", out);
+}

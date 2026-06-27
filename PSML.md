@@ -144,8 +144,11 @@ without a line break after it:
 
 ## Hooking it into your shell config
 
-See the **Usage** section in the top-level [README](./README.md) for the
-exact snippets for bash/zsh/fish/PowerShell/cmd.
+See the **Usage** and **Preview** sections in the top-level
+[README](./README.md) for the exact snippets for bash/zsh/fish/PowerShell/
+cmd, and for `--preview` — a flag that actually runs `<git/>`/`<cmd run>`
+and prints the resulting prompt right now, without touching your shell
+config at all.
 
 The short version: `psml` itself runs **once**, when your shell starts up
 (when `.bashrc`/`.zshrc`/etc. is sourced). What it outputs is then read
