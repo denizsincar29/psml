@@ -60,6 +60,16 @@ If a tag genuinely can't be supported on a given shell (e.g. `<git/>` on
 `cmd`), the converter fails with a clear explanation instead of silently
 emitting a prompt that's subtly broken.
 
+**Why does `<cmd run>` need bash on PowerShell/fish/Nushell?** It's the only
+sane way to honor an *arbitrary* command written in POSIX shell syntax
+(`<cmd run="...">`'s whole contract) without trying to transpile shell
+syntax — which is exactly as fragile as it sounds. `<git/>` itself doesn't
+have this problem: it's implemented natively on every shell that can run it
+at all. If you don't want the bash dependency for your own `<cmd run>`,
+write the shell-specific versions explicitly with `<if shell="...">`/
+`<else>` instead of relying on the one-size-fits-all fallback — see
+[PSML.md](./PSML.md#writing-one-file-for-multiple-shells) for the syntax.
+
 ## Install
 
 ```bash
@@ -130,16 +140,19 @@ status), not of the `psml` process itself, so there's nothing real to read
 — they're shown as `0` with a one-line note appended if the document
 actually uses them, rather than silently pretending it's a live value.
 
-`--preview` ignores `--shell` and `--raw` — it isn't tied to any particular
-shell's capabilities (or limitations: a `<git/>` that would fail to compile
-for `cmd.exe` previews just fine, since preview never goes through the
-`cmd` backend at all).
+`--preview` ignores `--raw` (there's no "wrapper" to strip), but `--shell`
+still matters if your file uses `<if shell="...">` — preview shows you
+exactly the branch that shell would get. Shell-specific *capability* limits
+don't apply to it though: a `<git/>` that would fail to compile for
+`cmd.exe` previews just fine, since preview never goes through the `cmd`
+backend at all.
 
 ## The language
 
 Full tag reference, attributes, and more examples (git status, venv
-indicator, exit-code coloring, etc.) live in
-[PSML.md](./PSML.md).
+indicator, exit-code coloring, writing one file for several shells with
+`<if>`/`<else>`, sanity-checking `<git>`/`<cmd run>` at generation time,
+etc.) live in [PSML.md](./PSML.md).
 
 A quick taste of the available tags:
 
@@ -152,6 +165,8 @@ A quick taste of the available tags:
 | `<git prefix=".." suffix="..">` | current git branch |
 | `<cmd run="...">` | output of an arbitrary shell command |
 | `<bold>` `<underline>` `<italic>` `<color fg=".." bg="..">` | style, nestable |
+| `<if shell="bash,zsh">`/`<if command="docker">`/`<else>` | preprocessing: include/drop markup per target shell or available tooling |
+| `<git check="1">` / `<cmd run="..." check="1">` | sanity-check the command at generation time, abort (`1`) or warn (`2`) on failure |
 
 ## How it works
 
@@ -165,7 +180,15 @@ PSML text --[src/parser.rs]--> IR tree (src/ir.rs) --[src/render/*.rs]--> shell 
   render time.
 - **`src/parser.rs`** — turns PSML text into that tree. This is the only
   place that knows anything about PSML/XML syntax; it has no idea what a
-  shell even is.
+  shell even is — with one carve-out: it takes the resolved target shell as
+  an argument, because `<if shell="...">` has to be resolved while parsing
+  (see [PSML.md](./PSML.md#writing-one-file-for-multiple-shells)).
+- **`src/validate.rs`** — runs `<git check="1|2">`/`<cmd run="..." check=
+  "1|2">` for real, between parsing and rendering; not part of the parser
+  (no side effects there) and not part of any one backend (it doesn't
+  depend on which shell you're targeting).
+- **`src/sysprobe.rs`** — the "does this command exist" check shared by
+  `<if command="...">` and `check-path`.
 - **`src/render/`** — one module per shell, each implementing the
   `ShellBackend` trait. `render/util.rs` holds the bits shared by several
   backends (quoting rules, the ANSI/SGR color resolver used by bash, fish,
@@ -197,8 +220,42 @@ cargo test
   `pwsh`/`nu` to execute against — the code has been reviewed by hand
   instead, see the comments in `src/render/powershell.rs` /
   `src/render/nu.rs`).
+- `<if>`/`<else>` and `check`/`check-path`/`path` each have their own
+  tests, including ones that actually run a missing/real command to check
+  the abort/warn behavior.
 - `--preview` has its own tests, including one that actually shells out and
   checks the real output of a `<cmd run="...">`.
+
+## Releases
+
+Versioning and releases are automated with
+[release-plz](https://release-plz.dev/), driven by
+[Conventional Commits](https://www.conventionalcommits.org/) (`feat:` ->
+minor bump, `fix:` -> patch, `feat!:`/a `BREAKING CHANGE:` footer -> major).
+Two jobs run on every push to `main`
+(`.github/workflows/release.yml`):
+
+- **release-pr** looks at commits since the last release and keeps a single
+  PR open/updated with the resulting `Cargo.toml` version bump and
+  `CHANGELOG.md` entry. Merging that PR is the only manual step.
+- **release**, once that PR is merged, notices the version bump, creates the
+  `vX.Y.Z` git tag and a GitHub Release with the changelog — and a third
+  job in the same workflow run then builds release binaries for Linux,
+  Windows, and macOS (Intel + Apple Silicon) and attaches them to it.
+
+`psml` isn't published to crates.io (`release-plz.toml` sets `publish =
+false`) — it's a personal CLI tool, not a library meant for `cargo add`.
+
+`.github/workflows/ci.yml` separately runs `cargo build`/`cargo test` on
+every push and pull request, on all three OSes — unrelated to releases,
+just regular regression testing.
+
+**One-time setup required** (GitHub's default token permissions are
+read-only on new repos, which silently breaks the release-pr step): in
+**Settings → Actions → General → Workflow permissions**, select
+*"Read and write permissions"* and tick *"Allow GitHub Actions to create
+and approve pull requests"*. No secrets to add — both jobs use the
+automatically-provided `GITHUB_TOKEN`.
 
 ## License
 

@@ -1,0 +1,20 @@
+# Конфиг release-plz (https://release-plz.dev/docs/config).
+#
+# psml — личный бинарный инструмент, не публикуется на crates.io, поэтому:
+# - publish = false: release-plz не зовёт `cargo publish`; вместо crates.io
+#   он берёт текущую версию из git-тегов (см. `git_tag_name` ниже).
+# - git_tag_enable/git_release_enable: но git-тег и GitHub Release всё равно
+#   создаются — именно по этому тегу собирает и заливает бинарники
+#   .github/workflows/release.yml.
+#
+# Версия в Cargo.toml двигается release-PR'ами на основе Conventional
+# Commits (`feat:` -> minor, `fix:` -> patch, `feat!:`/`BREAKING CHANGE:` ->
+# major) — см. .github/workflows/release.yml.
+
+[workspace]
+publish = false
+git_release_enable = true
+git_tag_enable = true
+git_tag_name = "v{{ version }}"
+git_release_name = "v{{ version }}"
+changelog_update = true

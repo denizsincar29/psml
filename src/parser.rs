@@ -1,6 +1,15 @@
 //! Парсер PSML: `&str` -> [`Document`] (IR). Это единственное место в крейте,
 //! которое знает про синтаксис PSML/XML. Оно понятия не имеет, что такое
-//! bash, zsh или fish — этим занимаются модули в `render/`.
+//! bash, zsh или fish, рендерится ли результат в shell-код или в превью —
+//! этим занимаются `render/` и `preview.rs`.
+//!
+//! Единственное исключение — `target_shell`, который парсер ДОЛЖЕН знать
+//! заранее (передаётся аргументом, не вычисляется по ходу разбора): именно
+//! на этом этапе вычисляются preprocessing-теги `<if shell="...">`, а узнать
+//! "для какого шелла мы сейчас генерируем" нужно ДО того, как до них дойдёт
+//! очередь — раньше, чем закончится разбор всего документа. Имя `target_shell`
+//! всегда конкретное (результат `render::resolve_shell`), а не "может быть
+//! None" — даже `--preview` его получает (см. `main.rs`).
 //!
 //! Используется `quick-xml` как лексер тегов/атрибутов/сущностей (как
 //! `html.parser` в питон-версии); вложенность стилевых тегов и построение
@@ -9,7 +18,8 @@
 use std::collections::HashMap;
 
 use crate::err;
-use crate::ir::{Document, Node, PsmlError, TimeMode};
+use crate::ir::{Document, ExecCheck, Node, PsmlError, TimeMode};
+use crate::sysprobe::command_in_path;
 
 type Attrs = HashMap<String, String>;
 
@@ -41,8 +51,17 @@ struct Frame {
     children: Vec<Node>,
 }
 
+/// Что именно мы сейчас пропускаем (см. `skip_depth`) — нужно, чтобы по
+/// выходу из пропуска правильно выставить `last_if_result` для `<else>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CondKind {
+    If,
+    Else,
+}
+
 struct Parser {
-    shell: Option<String>,
+    target_shell: String,
+    shell_attr: Option<String>,
     psml_seen: bool,
     psml_depth: i32,
     in_head: bool,
@@ -52,12 +71,25 @@ struct Parser {
     title_parts: Vec<String>,
     body_root: Vec<Node>,
     frame_stack: Vec<Frame>,
+    /// >0 — мы внутри содержимого `<if>`/`<else>`, условие которого false:
+    /// все события (любые теги/текст) до соответствующего закрывающего тега
+    /// просто отбрасываются, без какой-либо валидации содержимого —
+    /// благодаря этому `<if shell="cmd">` может содержать что угодно,
+    /// нерелевантное для остальных шеллов, и это не помешает их генерации.
+    skip_depth: u32,
+    skipping_kind: Option<CondKind>,
+    /// Результат последнего ЗАКРЫВШЕГОСЯ `<if>` — если следующий значимый
+    /// тег это `<else>`, он его читает (и инвертирует). Любой другой тег
+    /// (или текст) сбрасывает это в `None` — `<else>` обязан идти сразу
+    /// следом за `</if>`, не через произвольный контент.
+    last_if_result: Option<bool>,
 }
 
 impl Parser {
-    fn new() -> Self {
+    fn new(target_shell: String) -> Self {
         Parser {
-            shell: None,
+            target_shell,
+            shell_attr: None,
             psml_seen: false,
             psml_depth: 0,
             in_head: false,
@@ -67,6 +99,9 @@ impl Parser {
             title_parts: Vec::new(),
             body_root: Vec::new(),
             frame_stack: Vec::new(),
+            skip_depth: 0,
+            skipping_kind: None,
+            last_if_result: None,
         }
     }
 
@@ -106,14 +141,61 @@ impl Parser {
         }
     }
 
+    /// Парсит атрибуты `check`/`check-path`/`path`, общие для `<git>`/`<cmd>`.
+    fn parse_exec_check(&self, attrs: &Attrs) -> Result<ExecCheck, PsmlError> {
+        let level = match attrs.get("check") {
+            Some(v) => crate::ir::CheckLevel::parse(v)?,
+            None => crate::ir::CheckLevel::Off,
+        };
+        let check_path = match attrs.get("check-path") {
+            Some(v) => parse_bool(v).ok_or_else(|| {
+                err!("атрибут check-path: ожидалось true/false, получено {:?}", v)
+            })?,
+            None => true,
+        };
+        let path = attrs.get("path").cloned();
+        Ok(ExecCheck { level, check_path, path })
+    }
+
+    /// Вычисляет условие `<if shell="..." command="...">` (оба
+    /// необязательны, но хотя бы один должен быть, комбинируются через И).
+    fn eval_if_attrs(&self, attrs: &Attrs) -> Result<bool, PsmlError> {
+        let shell_attr = attrs.get("shell");
+        let command_attr = attrs.get("command");
+        if shell_attr.is_none() && command_attr.is_none() {
+            return Err(err!(
+                "<if> должен иметь хотя бы один из атрибутов: shell, command"
+            ));
+        }
+        let mut result = true;
+        if let Some(v) = shell_attr {
+            result &= self.eval_shell_cond(v)?;
+        }
+        if let Some(v) = command_attr {
+            result &= eval_command_cond(v)?;
+        }
+        Ok(result)
+    }
+
+    fn eval_shell_cond(&self, value: &str) -> Result<bool, PsmlError> {
+        let (negated, entries) = parse_polarity_list(value)?;
+        let matches = entries.iter().any(|e| e == &self.target_shell);
+        Ok(if negated { !matches } else { matches })
+    }
+
     fn open(&mut self, tag_raw: &str, attrs: &Attrs) -> Result<(), PsmlError> {
         let tag = tag_raw.to_lowercase();
+
+        // <else> обязан идти сразу за закрывшимся <if> — любой другой тег
+        // (включая новый <if>) рвёт эту цепочку.
+        if tag != "else" {
+            self.last_if_result = None;
+        }
 
         if tag == "psml" {
             if self.psml_depth == 0 && !self.psml_seen {
                 self.psml_seen = true;
-                let tag_shell = attrs.get("shell").cloned();
-                self.shell = tag_shell;
+                self.shell_attr = attrs.get("shell").cloned();
             }
             self.psml_depth += 1;
             return Ok(());
@@ -156,6 +238,36 @@ impl Parser {
             return Err(err!("тег <{}> вне <body>", tag));
         }
 
+        // <if>/<else> — preprocessing-теги: они НЕ попадают в дерево (ни
+        // как узел, ни как контейнер) — либо их содержимое обрабатывается
+        // совершенно прозрачно (как если бы обёртки не было), либо целиком
+        // пропускается. См. doc-комментарий `skip_depth`.
+        if tag == "if" {
+            let cond = self.eval_if_attrs(attrs)?;
+            if !cond {
+                self.skip_depth = 1;
+                self.skipping_kind = Some(CondKind::If);
+            }
+            return Ok(());
+        }
+        if tag == "else" {
+            if !attrs.is_empty() {
+                return Err(err!(
+                    "<else> не принимает атрибуты — условие уже задано предшествующим <if>"
+                ));
+            }
+            let prev = self
+                .last_if_result
+                .ok_or_else(|| err!("<else> без непосредственно предшествующего <if>"))?;
+            self.last_if_result = None; // потребили — следующий <else> уже не пройдёт
+            if prev {
+                // if был true => else пропускаем целиком
+                self.skip_depth = 1;
+                self.skipping_kind = Some(CondKind::Else);
+            }
+            return Ok(());
+        }
+
         match tag.as_str() {
             "br" => self.insert_node(Node::Br),
             "user" => self.insert_node(Node::User),
@@ -179,7 +291,8 @@ impl Parser {
             "git" => {
                 let prefix = attrs.get("prefix").cloned().unwrap_or_else(|| " (".to_string());
                 let suffix = attrs.get("suffix").cloned().unwrap_or_else(|| ")".to_string());
-                self.insert_node(Node::Git { prefix, suffix });
+                let check = self.parse_exec_check(attrs)?;
+                self.insert_node(Node::Git { prefix, suffix, check });
             }
             "cmd" => {
                 let run = attrs.get("run").cloned();
@@ -187,7 +300,8 @@ impl Parser {
                     Some(r) if !r.is_empty() => r,
                     _ => return Err(err!("<cmd> должен иметь атрибут run с shell-командой")),
                 };
-                self.insert_node(Node::Cmd(run));
+                let check = self.parse_exec_check(attrs)?;
+                self.insert_node(Node::Cmd { run, check });
             }
             "bold" | "b" => self.open_container(ContainerKind::Bold, None, None),
             "underline" | "u" => self.open_container(ContainerKind::Underline, None, None),
@@ -212,6 +326,10 @@ impl Parser {
             "head" => self.in_head = false,
             "title" => self.in_title = false,
             "body" => self.in_body = false,
+            // мы дошли сюда (а не через skip_depth-ветку в главном цикле) —
+            // значит условие было true и контент обработан как обычно.
+            "if" => self.last_if_result = Some(true),
+            "else" => self.last_if_result = None,
             "bold" | "b" => self.close_container(ContainerKind::Bold)?,
             "underline" | "u" => self.close_container(ContainerKind::Underline)?,
             "italic" | "i" => self.close_container(ContainerKind::Italic)?,
@@ -221,6 +339,40 @@ impl Parser {
             _ => {}
         }
         Ok(())
+    }
+
+    /// Самозакрывающийся `<if/>`/`<else/>` — содержимого нет (значит, нечего
+    /// ни включать, ни пропускать), но результат всё равно нужно
+    /// зафиксировать на случай следующего `<else>`.
+    fn handle_empty_if_else(&mut self, tag: &str, attrs: &Attrs) -> Result<(), PsmlError> {
+        match tag {
+            "if" => {
+                let cond = self.eval_if_attrs(attrs)?;
+                self.last_if_result = Some(cond);
+            }
+            "else" => {
+                if !attrs.is_empty() {
+                    return Err(err!(
+                        "<else> не принимает атрибуты — условие уже задано предшествующим <if>"
+                    ));
+                }
+                self.last_if_result
+                    .ok_or_else(|| err!("<else> без непосредственно предшествующего <if>"))?;
+                self.last_if_result = None;
+            }
+            _ => unreachable!(),
+        }
+        Ok(())
+    }
+
+    /// Вызывается, когда `skip_depth` дошёл обратно до 0 — то есть мы нашли
+    /// закрывающий тег того самого `<if>`/`<else>`, с которого начался пропуск.
+    fn finish_skip(&mut self) {
+        match self.skipping_kind.take() {
+            Some(CondKind::If) => self.last_if_result = Some(false),
+            Some(CondKind::Else) => self.last_if_result = None,
+            None => {}
+        }
     }
 
     /// Текстовый узел. Как и в HTML, чисто форматирующий текст (отступ +
@@ -235,6 +387,9 @@ impl Parser {
         if whitespace_only_with_newline {
             return Ok(());
         }
+        // непробельный текст рвёт цепочку <if>...</if><else> точно так же,
+        // как и любой другой тег (см. open()).
+        self.last_if_result = None;
         if self.in_title {
             self.title_parts.push(data.to_string());
             return Ok(());
@@ -262,12 +417,52 @@ impl Parser {
         if !self.frame_stack.is_empty() {
             return Err(err!("остались незакрытые стилевые теги"));
         }
+        if self.skip_depth != 0 {
+            return Err(err!("не закрыт тег <if>/<else>"));
+        }
         Ok(Document {
-            shell: self.shell,
+            shell: self.shell_attr,
             title: self.title_parts.concat(),
             body: self.body_root,
         })
     }
+}
+
+fn parse_bool(s: &str) -> Option<bool> {
+    match s.to_lowercase().as_str() {
+        "true" | "1" | "yes" => Some(true),
+        "false" | "0" | "no" => Some(false),
+        _ => None,
+    }
+}
+
+/// Разбирает список вида `a,b,c` или `!a,!b` (отрицание — либо у всех
+/// элементов, либо ни у одного; смешивать нельзя, это неоднозначно).
+/// Возвращает `(negated, entries)`.
+fn parse_polarity_list(value: &str) -> Result<(bool, Vec<String>), PsmlError> {
+    let parts: Vec<&str> = value.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+    if parts.is_empty() {
+        return Err(err!("пустой список значений в условии <if>"));
+    }
+    let negs: Vec<bool> = parts.iter().map(|p| p.starts_with('!')).collect();
+    let all_neg = negs.iter().all(|&n| n);
+    let none_neg = negs.iter().all(|&n| !n);
+    if !all_neg && !none_neg {
+        return Err(err!(
+            "нельзя смешивать отрицание (!значение) и обычные значения в одном списке условия <if>"
+        ));
+    }
+    let entries = parts
+        .into_iter()
+        .map(|p| p.strip_prefix('!').unwrap_or(p).trim().to_lowercase())
+        .collect();
+    Ok((all_neg, entries))
+}
+
+fn eval_command_cond(value: &str) -> Result<bool, PsmlError> {
+    let (negated, entries) = parse_polarity_list(value)?;
+    let any_available = entries.iter().any(|e| command_in_path(e));
+    Ok(if negated { !any_available } else { any_available })
 }
 
 fn tag_name(bytes: &[u8]) -> String {
@@ -288,10 +483,40 @@ fn read_attrs(start: &quick_xml::events::BytesStart) -> Result<Attrs, PsmlError>
     Ok(attrs)
 }
 
-/// Разбирает PSML-текст в [`Document`] (IR). Ничего не знает про конкретные
-/// шеллы — `doc.shell` это просто сырое значение атрибута `<psml shell="...">`
-/// (или `None`), интерпретация/валидация имени шелла — на стороне `render::resolve`.
-pub fn parse_psml(text: &str) -> Result<Document, PsmlError> {
+/// Заглядывает в самый первый тег документа (должен быть `<psml>`) и
+/// возвращает его атрибут `shell`, если есть, ничего больше не разбирая.
+/// Нужно, чтобы определить итоговый шелл (`render::resolve_shell`) ДО
+/// полного разбора — а полный разбор (`parse_psml`) этот шелл как раз
+/// требует на входе, чтобы вычислить `<if shell="...">`.
+pub fn peek_shell_attr(text: &str) -> Option<String> {
+    use quick_xml::events::Event;
+    use quick_xml::reader::Reader;
+
+    let mut reader = Reader::from_str(text);
+    reader.config_mut().check_end_names = false;
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Eof) => return None,
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+                if !tag_name(e.name().as_ref()).eq_ignore_ascii_case("psml") {
+                    return None;
+                }
+                return read_attrs(&e).ok()?.get("shell").cloned();
+            }
+            Ok(_) => continue,
+            Err(_) => return None,
+        }
+    }
+}
+
+/// Разбирает PSML-текст в [`Document`] (IR) для конкретного `target_shell`
+/// (нужен только для вычисления `<if shell="...">` по ходу разбора — см.
+/// doc-комментарий в начале файла). `doc.shell` в результате — это просто
+/// сырое значение атрибута `<psml shell="...">` (или `None`) для справки;
+/// само разрешение "какой шелл в итоге используем" уже произошло раньше,
+/// через [`peek_shell_attr`] + `render::resolve_shell`.
+pub fn parse_psml(text: &str, target_shell: &str) -> Result<Document, PsmlError> {
     use quick_xml::events::Event;
     use quick_xml::reader::Reader;
 
@@ -299,7 +524,7 @@ pub fn parse_psml(text: &str) -> Result<Document, PsmlError> {
     reader.config_mut().check_end_names = false;
     reader.config_mut().trim_text(false);
 
-    let mut p = Parser::new();
+    let mut p = Parser::new(target_shell.to_lowercase());
 
     loop {
         let event = reader
@@ -309,23 +534,43 @@ pub fn parse_psml(text: &str) -> Result<Document, PsmlError> {
             Event::Eof => break,
             Event::Start(e) => {
                 let name = tag_name(e.name().as_ref());
+                if p.skip_depth > 0 {
+                    p.skip_depth += 1;
+                    continue;
+                }
                 let attrs = read_attrs(&e)?;
                 p.open(&name, &attrs)?;
             }
             Event::Empty(e) => {
-                // Самозакрывающийся тег — open+close атомарно: для
-                // контейнерных тегов это даёт узел с пустыми children
-                // (см. `self_closing_style_tag_auto_closes` в тестах),
-                // для остальных — просто эквивалентно одиночному узлу.
                 let name = tag_name(e.name().as_ref());
+                if p.skip_depth > 0 {
+                    // самозакрывающийся тег внутри пропуска — глубина не
+                    // меняется (это Start+End в одном событии).
+                    continue;
+                }
                 let attrs = read_attrs(&e)?;
-                p.open(&name, &attrs)?;
-                p.close(&name)?;
+                let lname = name.to_lowercase();
+                if lname == "if" || lname == "else" {
+                    p.handle_empty_if_else(&lname, &attrs)?;
+                } else {
+                    p.open(&name, &attrs)?;
+                    p.close(&name)?;
+                }
             }
             Event::End(e) => {
+                if p.skip_depth > 0 {
+                    p.skip_depth -= 1;
+                    if p.skip_depth == 0 {
+                        p.finish_skip();
+                    }
+                    continue;
+                }
                 p.close(&tag_name(e.name().as_ref()))?;
             }
             Event::Text(t) => {
+                if p.skip_depth > 0 {
+                    continue;
+                }
                 let decoded = t.unescape().map_err(|e| err!("ошибка текста PSML: {}", e))?;
                 p.text(&decoded)?;
             }

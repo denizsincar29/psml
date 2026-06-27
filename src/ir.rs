@@ -29,7 +29,51 @@ macro_rules! err {
     ($($arg:tt)*) => { $crate::ir::PsmlError(format!($($arg)*)) };
 }
 
-/// Режим тега `<time mode="...">`.
+/// Уровень генерация-time проверки `<git check="..">`/`<cmd check="..">`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckLevel {
+    /// `0` (по умолчанию) — не проверять вообще, прежнее поведение.
+    Off,
+    /// `1` — реально выполнить команду при генерации; если код возврата
+    /// не 0 — напечатать stdout/stderr и ПРЕРВАТЬ генерацию.
+    Error,
+    /// `2` — то же самое, но при ошибке только предупреждение, генерация продолжается.
+    Warn,
+}
+
+impl CheckLevel {
+    pub fn parse(s: &str) -> Result<Self, PsmlError> {
+        Ok(match s {
+            "0" => CheckLevel::Off,
+            "1" => CheckLevel::Error,
+            "2" => CheckLevel::Warn,
+            _ => return Err(err!("атрибут check: ожидалось 0, 1 или 2, получено {:?}", s)),
+        })
+    }
+
+    pub fn is_off(self) -> bool {
+        matches!(self, CheckLevel::Off)
+    }
+}
+
+/// Настройки генерация-time проверки для `<git>`/`<cmd>` — см. [`CheckLevel`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecCheck {
+    pub level: CheckLevel,
+    /// `check-path` (по умолчанию `true`, имеет смысл только при `level != Off`):
+    /// сначала дёшево проверить, что команда вообще существует (в PATH или
+    /// по `path`), и только если она нашлась — выполнять её целиком.
+    pub check_path: bool,
+    /// `path` — необязательный явный путь к исполняемому файлу вместо поиска
+    /// в PATH (для `check_path`).
+    pub path: Option<String>,
+}
+
+impl Default for ExecCheck {
+    fn default() -> Self {
+        ExecCheck { level: CheckLevel::Off, check_path: true, path: None }
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimeMode {
     H24,
@@ -89,9 +133,9 @@ pub enum Node {
     /// `<date fmt="...">`, `fmt` — strftime-формат (None = формат шелла по умолчанию).
     Date(Option<String>),
     /// `<git prefix=".." suffix="..">` — текущая git-ветка.
-    Git { prefix: String, suffix: String },
+    Git { prefix: String, suffix: String, check: ExecCheck },
     /// `<cmd run="...">` — вывод произвольной POSIX shell-команды.
-    Cmd(String),
+    Cmd { run: String, check: ExecCheck },
     /// Сброс всех цветов/стилей.
     Reset,
     Bold(Vec<Node>),

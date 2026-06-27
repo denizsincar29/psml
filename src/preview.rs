@@ -80,14 +80,14 @@ fn render_node(node: &Node, out: &mut String, used_placeholder: &mut bool) -> Re
         Node::Date(fmt) => {
             out.push_str(&date_command(fmt.as_deref().unwrap_or(crate::ir::DEFAULT_DATE_FMT)))
         }
-        Node::Git { prefix, suffix } => {
+        Node::Git { prefix, suffix, .. } => {
             if let Some(b) = git_branch() {
                 out.push_str(prefix);
                 out.push_str(&b);
                 out.push_str(suffix);
             }
         }
-        Node::Cmd(run) => out.push_str(&run_shell_unconditional(run)),
+        Node::Cmd { run, .. } => out.push_str(&run_shell_unconditional(run)),
         Node::Bold(children) => emit_pair(children, "1", "22", out, used_placeholder)?,
         Node::Underline(children) => emit_pair(children, "4", "24", out, used_placeholder)?,
         Node::Italic(children) => emit_pair(children, "3", "23", out, used_placeholder)?,

@@ -47,11 +47,11 @@ fn render_node(node: &Node, out: &mut String, uses_subst: &mut bool) -> Result<(
             Some(f) => out.push_str(&format!("\\D{{{}}}", f)),
             None => out.push_str("\\d"),
         },
-        Node::Git { prefix, suffix } => {
+        Node::Git { prefix, suffix, .. } => {
             *uses_subst = true;
             out.push_str(&wrap_subst(&git_cmd(prefix, suffix)));
         }
-        Node::Cmd(run) => {
+        Node::Cmd { run, .. } => {
             *uses_subst = true;
             out.push_str(&wrap_subst(run));
         }

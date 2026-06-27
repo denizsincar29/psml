@@ -473,12 +473,178 @@ fn nu_cmd_run_shells_out_to_bash() {
 }
 
 // ---------------------------------------------------------------------------
+// <if shell="...">/<else> — preprocessing-теги для многошелловых промптов
+// ---------------------------------------------------------------------------
+
+fn convert_raw(psml: &str, shell: &str) -> Result<String, psml::PsmlError> {
+    psml::convert(psml, Some(shell), true)
+}
+
+#[test]
+fn if_shell_picks_matching_branch_only() {
+    let doc = r#"<psml><body><if shell="bash">A</if><if shell="zsh">B</if></body></psml>"#;
+    assert_eq!(convert_raw(doc, "bash").unwrap(), "A");
+    assert_eq!(convert_raw(doc, "zsh").unwrap(), "B");
+    assert_eq!(convert_raw(doc, "fish").unwrap(), "printf '%s'");
+}
+
+#[test]
+fn if_shell_negation() {
+    let doc = r#"<psml><body><if shell="!cmd">A</if></body></psml>"#;
+    assert_eq!(convert_raw(doc, "bash").unwrap(), "A");
+    assert_eq!(convert_raw(doc, "cmd").unwrap(), "");
+}
+
+#[test]
+fn if_shell_or_list() {
+    let doc = r#"<psml><body><if shell="bash,zsh">A</if></body></psml>"#;
+    assert_eq!(convert_raw(doc, "bash").unwrap(), "A");
+    assert_eq!(convert_raw(doc, "zsh").unwrap(), "A");
+    assert_eq!(convert_raw(doc, "fish").unwrap(), "printf '%s'");
+}
+
+#[test]
+fn if_shell_mixed_polarity_errors() {
+    let doc = r#"<psml><body><if shell="bash,!zsh">A</if></body></psml>"#;
+    assert!(convert_raw(doc, "bash").is_err());
+}
+
+#[test]
+fn if_without_shell_or_command_errors() {
+    let doc = r#"<psml><body><if>A</if></body></psml>"#;
+    assert!(convert_raw(doc, "bash").is_err());
+}
+
+#[test]
+fn else_renders_when_if_is_false() {
+    let doc = r#"<psml><body><if shell="bash">A</if><else>B</else></body></psml>"#;
+    assert_eq!(convert_raw(doc, "bash").unwrap(), "A");
+    assert_eq!(convert_raw(doc, "zsh").unwrap(), "B");
+}
+
+#[test]
+fn else_without_preceding_if_errors() {
+    let doc = r#"<psml><body><else>B</else></body></psml>"#;
+    assert!(convert_raw(doc, "bash").is_err());
+}
+
+#[test]
+fn else_with_attributes_errors() {
+    let doc = r#"<psml><body><if shell="zsh">A</if><else shell="bash">B</else></body></psml>"#;
+    assert!(convert_raw(doc, "bash").is_err());
+}
+
+#[test]
+fn else_not_immediately_after_if_errors() {
+    // между </if> и <else> затесался непробельный текст — цепочка рвётся.
+    let doc = r#"<psml><body><if shell="zsh">A</if>X<else>B</else></body></psml>"#;
+    assert!(convert_raw(doc, "bash").is_err());
+}
+
+#[test]
+fn self_closing_if_still_feeds_else() {
+    let doc = r#"<psml><body><if shell="zsh"/><else>B</else></body></psml>"#;
+    assert_eq!(convert_raw(doc, "bash").unwrap(), "B");
+    assert_eq!(convert_raw(doc, "zsh").unwrap(), "");
+}
+
+#[test]
+fn skipped_if_branch_content_is_never_validated() {
+    // <nonexistenttag/> внутри ветки для другого шелла не должен мешать
+    // генерации для bash — он попросту никогда не разбирается.
+    let doc = r#"<psml><body><if shell="cmd"><nonexistenttag/></if>ok</body></psml>"#;
+    assert_eq!(convert_raw(doc, "bash").unwrap(), "ok");
+    // а для cmd (где ветка реально раскрывается) это всё равно ошибка
+    assert!(convert_raw(doc, "cmd").is_err());
+}
+
+#[test]
+fn if_command_condition() {
+    // sh почти наверняка есть везде, где это будет собрано и запущено
+    let doc_has = r#"<psml><body><if command="sh">A</if></body></psml>"#;
+    assert_eq!(convert_raw(doc_has, "bash").unwrap(), "A");
+    let doc_missing =
+        r#"<psml><body><if command="this-cmd-does-not-exist-zzz">A</if></body></psml>"#;
+    assert_eq!(convert_raw(doc_missing, "bash").unwrap(), "");
+}
+
+#[test]
+fn if_command_and_shell_combine_with_and() {
+    let doc = r#"<psml><body><if shell="bash" command="this-cmd-does-not-exist-zzz">A</if></body></psml>"#;
+    assert_eq!(convert_raw(doc, "bash").unwrap(), "");
+}
+
+#[test]
+fn nested_if_inside_true_branch_works_normally() {
+    let doc = r#"<psml><body><if shell="bash"><if shell="bash">A</if></if></body></psml>"#;
+    assert_eq!(convert_raw(doc, "bash").unwrap(), "A");
+}
+
+// ---------------------------------------------------------------------------
+// <git>/<cmd> check/check-path/path — generation-time валидация
+// ---------------------------------------------------------------------------
+
+#[test]
+fn check_off_by_default_never_runs_anything() {
+    // команда не существует, но check не указан (по умолчанию "0") — не ошибка.
+    let doc = r#"<psml><body><cmd run="this-cmd-does-not-exist-zzz"/></body></psml>"#;
+    assert!(convert_raw(doc, "bash").is_ok());
+}
+
+#[test]
+fn check_path_catches_missing_command_with_level_1() {
+    let doc =
+        r#"<psml><body><cmd run="this-cmd-does-not-exist-zzz" check="1"/></body></psml>"#;
+    let err = convert_raw(doc, "bash").unwrap_err();
+    assert!(err.0.contains("не найдена"), "{}", err.0);
+}
+
+#[test]
+fn check_level_2_warns_but_still_generates() {
+    let doc =
+        r#"<psml><body><cmd run="this-cmd-does-not-exist-zzz" check="2"/></body></psml>"#;
+    assert!(convert_raw(doc, "bash").is_ok());
+}
+
+#[test]
+fn check_path_false_skips_path_lookup_and_runs_command_directly() {
+    // "echo" — шелл-builtin sh, которого не найдёшь поиском по PATH как
+    // отдельный исполняемый файл на некоторых системах; check-path=false
+    // пропускает дорогую/бессмысленную здесь проверку и просто запускает.
+    let doc = r#"<psml><body><cmd run="echo hi" check="1" check-path="false"/></body></psml>"#;
+    assert!(convert_raw(doc, "bash").is_ok());
+}
+
+#[test]
+fn check_invalid_level_errors_at_parse_time() {
+    let doc = r#"<psml><body><cmd run="echo hi" check="3"/></body></psml>"#;
+    assert!(convert_raw(doc, "bash").is_err());
+}
+
+#[test]
+fn check_path_explicit_path_checked_instead_of_path_env() {
+    let doc = r#"<psml><body><cmd run="echo hi" check="1" path="/definitely/not/a/real/binary"/></body></psml>"#;
+    let err = convert_raw(doc, "bash").unwrap_err();
+    assert!(err.0.contains("не найдена"), "{}", err.0);
+}
+
+#[test]
+fn git_check_runs_real_git_version_check() {
+    // git точно есть (используется тестами в других местах файла) —
+    // check-path должен пройти; реальный результат symbolic-ref/rev-parse
+    // зависит от того, git-репозиторий ли текущая директория тестового
+    // процесса (то есть сам пакет psml) — а это так, значит check=1 пройдёт.
+    let doc = r#"<psml><body><git check="1"/></body></psml>"#;
+    assert!(convert_raw(doc, "bash").is_ok());
+}
+
+// ---------------------------------------------------------------------------
 // --preview / render_preview: интерпретатор IR, а не shell-бэкенд — реально
 // выполняет <git/>/<cmd run>/`date`, печатает готовый ANSI-текст.
 // ---------------------------------------------------------------------------
 
 fn render_preview(psml: &str) -> Result<String, psml::PsmlError> {
-    let doc = psml::parse_psml(psml).expect("doc должен парситься");
+    let doc = psml::parse_psml(psml, "bash").expect("doc должен парситься");
     psml::render_preview(&doc)
 }
 

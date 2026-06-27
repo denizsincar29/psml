@@ -4,7 +4,7 @@ use std::io::{self, Read};
 use std::path::Path;
 use std::process::exit;
 
-use psml::{convert, parse_psml, render_preview, shell_keys, PsmlError};
+use psml::{convert, parse_psml, peek_shell_attr, render_preview, resolve_shell, shell_keys, PsmlError};
 
 const DEFAULT_PATH: &str = "~/ps1.psml";
 
@@ -37,7 +37,8 @@ fn print_help() {
     );
     println!("  --raw          печатать только саму строку приглашения, без обвязки (PS1=.../function prompt {{...}}/...)");
     println!("  --preview      напечатать пример РЕАЛЬНОГО вида промпта прямо в терминал (не shell-код,");
-    println!("                 выполняет <git/>/<cmd run=...> по-настоящему; игнорирует --shell/--raw)");
+    println!("                 выполняет <git/>/<cmd run=...> по-настоящему; --shell всё ещё влияет на");
+    println!("                 <if shell=\"...\">, а --raw для превью не имеет смысла и игнорируется)");
     println!("  --list-shells  показать поддерживаемые шеллы и выйти");
 }
 
@@ -117,7 +118,13 @@ fn main() {
     };
 
     if preview {
-        match parse_psml(&text).and_then(|doc| render_preview(&doc)) {
+        let result = (|| {
+            let doc_shell_attr = peek_shell_attr(&text);
+            let backend = resolve_shell(shell_arg.as_deref(), doc_shell_attr.as_deref())?;
+            let doc = parse_psml(&text, backend.key())?;
+            render_preview(&doc)
+        })();
+        match result {
             Ok(output) => println!("{}", output),
             Err(PsmlError(msg)) => {
                 eprintln!("Ошибка PSML ({}): {}", src_desc, msg);

@@ -96,7 +96,7 @@ fn render_node(node: &Node, out: &mut String) -> Result<(), PsmlError> {
                 "cmd.exe: <git/> не поддержан — PROMPT в cmd.exe это статическая строка, она не может выполнять команды при каждой перерисовке"
             ))
         }
-        Node::Cmd(_) => {
+        Node::Cmd { .. } => {
             return Err(err!(
                 "cmd.exe: <cmd run=...> не поддержан — PROMPT в cmd.exe это статическая строка, она не может выполнять произвольные команды при каждой перерисовке"
             ))
